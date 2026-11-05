@@ -1,0 +1,12 @@
+{
+  "title": "SNSHS Learning Management System",
+  "description": "The learning management portal for students, teachers, and administrators of St. Nicholas Senior High School.",
+  "language": "en",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
