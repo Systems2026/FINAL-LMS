@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import defaultProfile from "./assets/default-profile.png"
 import logo from "./assets/snhs-logo.png"
 
@@ -7299,10 +7299,26 @@ function ManagementPage({
     Record<string, string>
   >({})
   const [selectedAcademicYearId, setSelectedAcademicYearId] = useState("")
-  const [selectedGradeLevelId, setSelectedGradeLevelId] = useState("")
-  const [selectedStrandId, setSelectedStrandId] = useState("")
+  const [draft, setDraft] = useState<string[]>([])
+  const selectedGradeLevelId =
+    gradeLevels.find((grade) => {
+      const draftGrade = String(draft[2] || "").trim().toLowerCase()
+      return (
+        grade.name.trim().toLowerCase() === draftGrade ||
+        String(grade.number) === draftGrade.replace(/\D/g, "")
+      )
+    })?.id || ""
+  const selectedStrandId =
+    strands.find((strand) => {
+      const draftStrand = String(draft[3] || "").trim().toLowerCase()
+      return (
+        strand.code.trim().toLowerCase() === draftStrand ||
+        strand.name.trim().toLowerCase() === draftStrand
+      )
+    })?.id || ""
   const [classSectionLoadError, setClassSectionLoadError] = useState("")
   const [classSectionLoading, setClassSectionLoading] = useState(false)
+  const classSectionRequestId = useRef(0)
   const [classSectionCodeByStudentId, setClassSectionCodeByStudentId] =
     useState<Record<string, string>>({})
   const [emailByStudentId, setEmailByStudentId] =
@@ -7322,7 +7338,6 @@ function ManagementPage({
     null,
   )
   const [selectedRecord, setSelectedRecord] = useState<number | null>(null)
-  const [draft, setDraft] = useState<string[]>([])
   const [selectedClassSectionCode, setSelectedClassSectionCode] = useState("")
   useEffect(() => {
     let active = true
@@ -7477,6 +7492,7 @@ function ManagementPage({
   }, [isStudents])
 
   const loadAvailableClassSections = async () => {
+    const requestId = ++classSectionRequestId.current
     setClassSectionLoading(true)
     setClassSectionLoadError("")
     try {
@@ -7502,6 +7518,7 @@ function ManagementPage({
             : "") || "Unable to load available class sections.",
         )
       }
+      if (requestId !== classSectionRequestId.current) return
       setClassSectionOptions(
         sections.map((value) => {
           if (!isRecord(value)) {
@@ -7521,18 +7538,24 @@ function ManagementPage({
         }),
       )
     } catch (error) {
+      if (requestId !== classSectionRequestId.current) return
       setClassSectionLoadError(
         error instanceof Error
           ? error.message
           : "Unable to load available class sections.",
       )
     } finally {
-      setClassSectionLoading(false)
+      if (requestId === classSectionRequestId.current) {
+        setClassSectionLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     if (isStudents && selectedAcademicYearId) void loadAvailableClassSections()
+    return () => {
+      classSectionRequestId.current += 1
+    }
   }, [
     isStudents,
     selectedAcademicYearId,
@@ -7570,16 +7593,6 @@ function ManagementPage({
     const currentYearId =
       academicYears.find((year) => year.isCurrent)?.id || academicYears[0]?.id || ""
     setSelectedAcademicYearId(existingYearId || currentYearId)
-    setSelectedGradeLevelId(
-      gradeLevels.find((grade) => grade.name === selectedStudentRecord?.[2])?.id || "",
-    )
-    setSelectedStrandId(
-      strands.find(
-        (strand) =>
-          strand.code.toLowerCase() ===
-          String(selectedStudentRecord?.[3] || "").toLowerCase(),
-      )?.id || "",
-    )
     setSelectedClassSectionCode(existingCode)
   }
   const closeRecord = () => {
@@ -7588,8 +7601,6 @@ function ManagementPage({
     setDraft([])
     setDraftPassword("")
     setSelectedClassSectionCode("")
-    setSelectedGradeLevelId("")
-    setSelectedStrandId("")
   }
   const saveRecord = async () => {
     if (isStudents) {
@@ -7943,11 +7954,6 @@ function ManagementPage({
                         value={draft[2] || ""}
                         onChange={(event) => {
                           setSelectedClassSectionCode("")
-                          setSelectedGradeLevelId(
-                            gradeLevels.find(
-                              (grade) => grade.name === event.target.value,
-                            )?.id || "",
-                          )
                           setDraft((current) => {
                             const next = [...current]
                             next[2] = event.target.value
@@ -7972,11 +7978,6 @@ function ManagementPage({
                         value={draft[3] || ""}
                         onChange={(event) => {
                           setSelectedClassSectionCode("")
-                          setSelectedStrandId(
-                            strands.find(
-                              (strand) => strand.code === event.target.value,
-                            )?.id || "",
-                          )
                           setDraft((current) => {
                             const next = [...current]
                             next[3] = event.target.value
