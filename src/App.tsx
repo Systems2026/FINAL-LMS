@@ -7291,23 +7291,30 @@ function ManagementPage({
     gradeLevelId: string
     strandId: string
   }[]>([])
-  const [academicYears, setAcademicYears] = useState<
-    { id: string; code: string; isCurrent: boolean }[]
-  >([])
-  const [gradeLevels, setGradeLevels] = useState<
-    { id: string; name: string; number: number }[]
-  >([])
-  const [strands, setStrands] = useState<
-    { id: string; code: string; name: string }[]
-  >([])
-  const [academicYearIdByStudent, setAcademicYearIdByStudent] = useState<
-    Record<string, string>
-  >({})
+  const [academicYears, setAcademicYears] = useState<{
+    id: string
+    code: string
+    isCurrent: boolean
+  }[]>([])
+  const [gradeLevels, setGradeLevels] = useState<{
+    id: string
+    name: string
+    number: number
+  }[]>([])
+  const [strands, setStrands] = useState<{
+    id: string
+    code: string
+    name: string
+  }[]>([])
+  const [academicYearIdByStudent, setAcademicYearIdByStudent] =
+    useState<Record<string, string>>({})
   const [selectedAcademicYearId, setSelectedAcademicYearId] = useState("")
   const [draft, setDraft] = useState<string[]>([])
   const selectedGradeLevelId =
     gradeLevels.find((grade) => {
-      const draftGrade = String(draft[2] || "").trim().toLowerCase()
+      const draftGrade = String(draft[2] || "")
+        .trim()
+        .toLowerCase()
       return (
         grade.name.trim().toLowerCase() === draftGrade ||
         String(grade.number) === draftGrade.replace(/\D/g, "")
@@ -7315,7 +7322,9 @@ function ManagementPage({
     })?.id || ""
   const selectedStrandId =
     strands.find((strand) => {
-      const draftStrand = String(draft[3] || "").trim().toLowerCase()
+      const draftStrand = String(draft[3] || "")
+        .trim()
+        .toLowerCase()
       return (
         strand.code.trim().toLowerCase() === draftStrand ||
         strand.name.trim().toLowerCase() === draftStrand
@@ -7500,7 +7509,10 @@ function ManagementPage({
           responses.map(async (response) => {
             const payload = await response.json().catch(() => null)
             if (!response.ok || !Array.isArray(payload)) {
-              throw new Error(payload?.message || "Unable to load academic placement options.")
+              throw new Error(
+                payload?.message ||
+                  "Unable to load academic placement options.",
+              )
             }
             return payload
           }),
@@ -7510,9 +7522,9 @@ function ManagementPage({
         const years = yearRows
           .filter((year) => String(year.status).toLowerCase() === "active")
           .map((year) => ({
-          id: String(year.id),
-          code: String(year.code),
-          isCurrent: Boolean(year.isCurrent),
+            id: String(year.id),
+            code: String(year.code),
+            isCurrent: Boolean(year.isCurrent),
           }))
         setAcademicYears(years)
         setGradeLevels(
@@ -7529,11 +7541,10 @@ function ManagementPage({
             name: String(strand.name),
           })),
         )
-        setSelectedAcademicYearId(
-          (current) =>
-            years.some((year) => year.id === current)
-              ? current
-              : years.find((year) => year.isCurrent)?.id || years[0]?.id || "",
+        setSelectedAcademicYearId((current) =>
+          years.some((year) => year.id === current)
+            ? current
+            : years.find((year) => year.isCurrent)?.id || years[0]?.id || "",
         )
       })
       .catch((error: unknown) => {
@@ -7556,7 +7567,8 @@ function ManagementPage({
     setClassSectionLoadError("")
     try {
       const query = new URLSearchParams()
-      if (selectedAcademicYearId) query.set("academicYearId", selectedAcademicYearId)
+      if (selectedAcademicYearId)
+        query.set("academicYearId", selectedAcademicYearId)
       if (selectedGradeLevelId) query.set("gradeLevelId", selectedGradeLevelId)
       if (selectedStrandId) query.set("strandId", selectedStrandId)
       if (selectedClassSectionCode) {
@@ -7653,12 +7665,15 @@ function ManagementPage({
       index === undefined ? undefined : records[index]
     const recordId = selectedStudentRecord?.[0] || ""
     const existingCode = recordId
-      ? classSectionCodeByStudentId[recordId] ||
-        ""
+      ? classSectionCodeByStudentId[recordId] || ""
       : ""
-    const existingYearId = recordId ? academicYearIdByStudent[recordId] || "" : ""
+    const existingYearId = recordId
+      ? academicYearIdByStudent[recordId] || ""
+      : ""
     const currentYearId =
-      academicYears.find((year) => year.isCurrent)?.id || academicYears[0]?.id || ""
+      academicYears.find((year) => year.isCurrent)?.id ||
+      academicYears[0]?.id ||
+      ""
     setSelectedAcademicYearId(existingYearId || currentYearId)
     setSelectedClassSectionCode(existingCode)
   }
@@ -8275,6 +8290,8 @@ function SubjectSectionsPage() {
     classSectionCode: string
     classSectionName: string
     teacher: string
+    room: string
+    schedule: string
     schoolYear: string
     semester: string
     enrolledStudents: string[]
@@ -8296,6 +8313,8 @@ function SubjectSectionsPage() {
     classSectionCode: "",
     classSectionName: "",
     teacher: "",
+    room: "",
+    schedule: "",
     schoolYear: "",
     semester: "",
     enrolledStudents: [] as string[],
@@ -8366,6 +8385,8 @@ function SubjectSectionsPage() {
         classSectionCode: classSection?.code || "",
         classSectionName: classSection?.name || "",
         teacher: teacherOptions[0]?.name || "",
+        room: "",
+        schedule: "",
         schoolYear: "",
         semester: "",
         enrolledStudents: [],
@@ -8414,6 +8435,8 @@ function SubjectSectionsPage() {
             classSectionCode: draft.classSectionCode,
             classSectionName: classSection?.name,
             teacher: draft.teacher,
+            room: draft.room,
+            schedule: draft.schedule,
             schoolYear: draft.schoolYear,
             semester: draft.semester,
           }),
@@ -8491,6 +8514,8 @@ function SubjectSectionsPage() {
               "Subject",
               "Class Section",
               "Teacher",
+              "Room",
+              "Schedule",
               "School Year",
               "Semester",
             ]}
@@ -8499,6 +8524,8 @@ function SubjectSectionsPage() {
               section.subjectName,
               section.classSectionName,
               section.teacher,
+              section.room || "—",
+              section.schedule || "—",
               section.schoolYear,
               section.semester,
             ])}
@@ -8536,6 +8563,14 @@ function SubjectSectionsPage() {
             <div>
               <span>Teacher</span>
               <strong>{selectedSection?.teacher || "—"}</strong>
+            </div>
+            <div>
+              <span>Room / Location</span>
+              <strong>{selectedSection?.room || "Not set"}</strong>
+            </div>
+            <div>
+              <span>Schedule / Time</span>
+              <strong>{selectedSection?.schedule || "Not set"}</strong>
             </div>
             <div>
               <span>School Year</span>
@@ -8630,6 +8665,34 @@ function SubjectSectionsPage() {
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="field">
+              <span>Room / Location</span>
+              <input
+                value={draft.room}
+                disabled={editorMode === "view" || saving}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    room: event.target.value,
+                  }))
+                }
+                placeholder="Room or laboratory"
+              />
+            </label>
+            <label className="field">
+              <span>Schedule / Time</span>
+              <input
+                value={draft.schedule}
+                disabled={editorMode === "view" || saving}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    schedule: event.target.value,
+                  }))
+                }
+                placeholder="e.g. Mon / Wed · 8:00–9:30 AM"
+              />
             </label>
             <label className="field">
               <span>School Year</span>
@@ -10902,7 +10965,10 @@ function Shell({ role, logout }: { role: Role; logout: () => void }) {
         : "Administrator"
   useEffect(() => {
     const updateProfileName = (event: Event) => {
-      const profileEvent = event as CustomEvent<{ id?: string; name?: string }>
+      const profileEvent = event as CustomEvent<{
+        id?: string
+        name?: string
+      }>
       if (profileEvent.detail?.name) setRoleName(profileEvent.detail.name)
       if (profileEvent.detail?.id) {
         setCurrentUserId(profileEvent.detail.id)

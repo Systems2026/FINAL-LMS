@@ -455,7 +455,9 @@ async function ensureMysqlConnection() {
       const foundTables = new Set(
         tableRows.map((row) => row.TABLE_NAME || row.table_name),
       )
-      const missingTables = requiredTables.filter((table) => !foundTables.has(table))
+      const missingTables = requiredTables.filter(
+        (table) => !foundTables.has(table),
+      )
       if (missingTables.length) {
         throw new Error(
           `The normalized database is incomplete; missing tables: ${missingTables.join(", ")}.`,
@@ -481,7 +483,9 @@ async function ensureMysqlConnection() {
       )
     }
     if (detectedProfile && detectedProfile !== "legacy") {
-      throw new Error(`Unsupported database schema profile: ${detectedProfile}.`)
+      throw new Error(
+        `Unsupported database schema profile: ${detectedProfile}.`,
+      )
     }
 
     mysqlSchemaProfile = "legacy"
@@ -539,9 +543,7 @@ async function ensureMysqlConnection() {
       ) ENGINE=InnoDB
     `)
 
-    await mysqlPool.query(
-      "ALTER TABLE student_id_sequence ENGINE = InnoDB",
-    )
+    await mysqlPool.query("ALTER TABLE student_id_sequence ENGINE = InnoDB")
 
     await mysqlPool.query(`
       CREATE TABLE IF NOT EXISTS subjects (
@@ -624,6 +626,21 @@ async function ensureMysqlConnection() {
         status VARCHAR(32) NOT NULL DEFAULT 'active'
       ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC
     `)
+
+    for (const [column, definition] of [
+      ["room", "VARCHAR(255) NOT NULL DEFAULT ''"],
+      ["schedule", "VARCHAR(255) NOT NULL DEFAULT ''"],
+    ]) {
+      const [columns] = await mysqlPool.query(
+        "SHOW COLUMNS FROM subject_sections LIKE ?",
+        [column],
+      )
+      if (!columns.length) {
+        await mysqlPool.query(
+          `ALTER TABLE subject_sections ADD COLUMN ${column} ${definition}`,
+        )
+      }
+    }
 
     const [subjectSectionStatusColumns] = await mysqlPool.query(
       "SHOW COLUMNS FROM subject_sections LIKE 'status'",
@@ -1067,6 +1084,10 @@ async function loadState() {
 
         teacher: section.teacher,
 
+        room: section.room || "",
+
+        schedule: section.schedule || "",
+
         schoolYear: section.schoolYear,
 
         semester: section.semester,
@@ -1260,7 +1281,7 @@ async function saveState(state) {
     await pool.query("DELETE FROM subject_sections")
 
     await pool.query(
-      "INSERT INTO subject_sections (id, subjectCode, subjectName, classSectionCode, classSectionName, teacher, schoolYear, semester, enrolledStudents, status) VALUES ?",
+      "INSERT INTO subject_sections (id, subjectCode, subjectName, classSectionCode, classSectionName, teacher, room, schedule, schoolYear, semester, enrolledStudents, status) VALUES ?",
 
       [
         state.subjectSections.map((section) => [
@@ -1270,6 +1291,8 @@ async function saveState(state) {
           section.classSectionCode,
           section.classSectionName,
           section.teacher,
+          section.room || "",
+          section.schedule || "",
           section.schoolYear,
           section.semester,
           JSON.stringify(section.enrolledStudents || []),
@@ -1510,8 +1533,8 @@ function enrollmentIsActiveForPeriod(enrollment, offering, period) {
   const semester = enrollment.semester || offering?.semester || ""
 
   return (
-    normalizeSchoolYear(schoolYear) === normalizeSchoolYear(period.schoolYear) &&
-    semester === period.semester
+    normalizeSchoolYear(schoolYear) ===
+      normalizeSchoolYear(period.schoolYear) && semester === period.semester
   )
 }
 
@@ -2176,9 +2199,9 @@ app.get("/api/dashboard/stats", async (req, res) => {
 
           teacher: section.teacher,
 
-          room: classRecord?.room || "",
+          room: section.room || classRecord?.room || "",
 
-          schedule: classRecord?.schedule || "",
+          schedule: section.schedule || classRecord?.schedule || "",
 
           color: classRecord?.color || "blue",
         }
@@ -2777,7 +2800,9 @@ app.get("/api/students", async (_, res) => {
       .map((user) => {
         const assignedClassSection = state.classSections.find(
           (section) =>
-            String(section.code || "").trim().toLowerCase() ===
+            String(section.code || "")
+              .trim()
+              .toLowerCase() ===
             String(user.classSectionCode || "")
               .trim()
               .toLowerCase(),
@@ -2993,13 +3018,11 @@ app.post("/api/teachers", async (req, res) => {
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) ||
     normalizedPassword.length < 8
   ) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message:
-          "Teacher name, a valid email address, and a password of at least 8 characters are required.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message:
+        "Teacher name, a valid email address, and a password of at least 8 characters are required.",
+    })
   }
 
   try {
@@ -3172,12 +3195,10 @@ app.patch("/api/teachers/:id", async (req, res) => {
     .toLowerCase()
 
   if (!normalizedName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message: "Teacher name and a valid email address are required.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message: "Teacher name and a valid email address are required.",
+    })
   }
 
   try {
@@ -3240,13 +3261,10 @@ app.patch("/api/teachers/:id", async (req, res) => {
       },
     })
   } catch (error) {
-    if (error.code === "ER_DUP_ENTRY")
-      return res
-        .status(409)
-        .json({
-          ok: false,
-          message: "An account with this email already exists.",
-        })
+    if (error.code === "ER_DUP_ENTRY") return res.status(409).json({
+        ok: false,
+        message: "An account with this email already exists.",
+      })
 
     console.error("Unable to update teacher:", error)
 
@@ -3360,10 +3378,12 @@ app.post("/api/students", async (req, res) => {
 
           classSection = lockedClassSections[0]
 
-          if (!studentMatchesSectionAttributes(
-            { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
-            classSection,
-          )) {
+          if (
+            !studentMatchesSectionAttributes(
+              { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+              classSection,
+            )
+          ) {
             await connection.rollback()
 
             return {
@@ -3514,10 +3534,12 @@ app.post("/api/students", async (req, res) => {
         return { error: "The selected class section is no longer active." }
       }
 
-      if (!studentMatchesSectionAttributes(
-        { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
-        classSection,
-      )) {
+      if (
+        !studentMatchesSectionAttributes(
+          { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+          classSection,
+        )
+      ) {
         return {
           error:
             "The selected section must match the student's grade and strand.",
@@ -3672,7 +3694,8 @@ app.patch("/api/students/:id", async (req, res) => {
     return res.status(400).json({
       ok: false,
 
-      message: "Name, email, grade, strand, and a valid class section are required.",
+      message:
+        "Name, email, grade, strand, and a valid class section are required.",
     })
   }
 
@@ -3731,20 +3754,20 @@ app.patch("/api/students/:id", async (req, res) => {
         if (!lockedClassSections.length) {
           await connection.rollback()
 
-          return res
-            .status(400)
-            .json({
-              ok: false,
-              message: "The selected class section is no longer active.",
-            })
+          return res.status(400).json({
+            ok: false,
+            message: "The selected class section is no longer active.",
+          })
         }
 
         classSection = lockedClassSections[0]
 
-        if (!studentMatchesSectionAttributes(
-          { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
-          classSection,
-        )) {
+        if (
+          !studentMatchesSectionAttributes(
+            { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+            classSection,
+          )
+        ) {
           await connection.rollback()
 
           return res.status(400).json({
@@ -3910,10 +3933,12 @@ app.patch("/api/students/:id", async (req, res) => {
       })
     }
 
-    if (!studentMatchesSectionAttributes(
-      { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
-      classSection,
-    )) {
+    if (
+      !studentMatchesSectionAttributes(
+        { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+        classSection,
+      )
+    ) {
       return res.status(400).json({
         ok: false,
 
@@ -4706,13 +4731,11 @@ app.post("/api/subjects", async (req, res) => {
     !Number.isFinite(normalizedUnits) ||
     normalizedUnits < 0
   ) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message:
-          "Subject code, name, and a valid non-negative unit value are required.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message:
+        "Subject code, name, and a valid non-negative unit value are required.",
+    })
   }
 
   try {
@@ -4737,12 +4760,10 @@ app.post("/api/subjects", async (req, res) => {
       const state = await loadState()
 
       if (state.subjects.some((item) => item.code === subject.code)) {
-        return res
-          .status(409)
-          .json({
-            ok: false,
-            message: "A subject with this code already exists.",
-          })
+        return res.status(409).json({
+          ok: false,
+          message: "A subject with this code already exists.",
+        })
       }
 
       state.subjects.push(subject)
@@ -4752,13 +4773,10 @@ app.post("/api/subjects", async (req, res) => {
 
     return res.status(201).json({ ok: true, subject })
   } catch (error) {
-    if (error.code === "ER_DUP_ENTRY")
-      return res
-        .status(409)
-        .json({
-          ok: false,
-          message: "A subject with this code already exists.",
-        })
+    if (error.code === "ER_DUP_ENTRY") return res.status(409).json({
+        ok: false,
+        message: "A subject with this code already exists.",
+      })
 
     console.error("Unable to create subject:", error)
 
@@ -4799,13 +4817,10 @@ app.patch("/api/subjects/:code", async (req, res) => {
     !Number.isFinite(normalizedUnits) ||
     normalizedUnits < 0
   ) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message:
-          "Subject name and a valid non-negative unit value are required.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message: "Subject name and a valid non-negative unit value are required.",
+    })
   }
 
   try {
@@ -5095,9 +5110,9 @@ app.get("/api/subject-sections", async (req, res) => {
               enrolledIds.has(section.id) ||
               section.enrolledStudents.includes(user.id),
 
-            room: classRecord?.room || "",
+            room: section.room || classRecord?.room || "",
 
-            schedule: classRecord?.schedule || "",
+            schedule: section.schedule || classRecord?.schedule || "",
 
             color: classRecord?.color || "emerald",
           }
@@ -5126,7 +5141,20 @@ app.get("/api/subject-sections", async (req, res) => {
   )
 
   return res.json(
-    visibleSections.filter((section) => enrolledSectionIds.has(section.id)),
+    visibleSections
+      .filter((section) => enrolledSectionIds.has(section.id))
+      .map((section) => {
+        const classRecord = state.classes.find(
+          (item) => item.code === section.classSectionCode,
+        )
+
+        return {
+          ...section,
+          room: section.room || classRecord?.room || "",
+          schedule: section.schedule || classRecord?.schedule || "",
+          color: classRecord?.color || "emerald",
+        }
+      }),
   )
 })
 
@@ -5139,17 +5167,16 @@ app.get("/api/enrollments", async (req, res) => {
 
   const period = await getActiveAcademicPeriod(pool, state)
 
-  const activeEnrollments = state.enrollments.filter(
-    (enrollment) =>
-      enrollmentIsActiveForPeriod(
-        enrollment,
+  const activeEnrollments = state.enrollments.filter((enrollment) =>
+    enrollmentIsActiveForPeriod(
+      enrollment,
 
-        state.subjectSections.find(
-          (section) => section.id === enrollment.subjectSectionId,
-        ),
-
-        period,
+      state.subjectSections.find(
+        (section) => section.id === enrollment.subjectSectionId,
       ),
+
+      period,
+    ),
   )
 
   if (req.user.role === "student") {
@@ -5610,6 +5637,8 @@ app.post("/api/subject-sections", async (req, res) => {
     classSectionCode,
     classSectionName,
     teacher,
+    room,
+    schedule,
     schoolYear,
     semester,
   } = req.body || {}
@@ -5621,13 +5650,11 @@ app.post("/api/subject-sections", async (req, res) => {
     !schoolYear ||
     !semester
   ) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message:
-          "Subject, class section, teacher, school year, and semester are required.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message:
+        "Subject, class section, teacher, school year, and semester are required.",
+    })
   }
 
   const record = {
@@ -5642,6 +5669,10 @@ app.post("/api/subject-sections", async (req, res) => {
     classSectionName: String(classSectionName || classSectionCode).trim(),
 
     teacher: String(teacher).trim(),
+
+    room: String(room || "").trim(),
+
+    schedule: String(schedule || "").trim(),
 
     schoolYear: normalizeSchoolYear(schoolYear),
 
@@ -5676,12 +5707,10 @@ app.post("/api/subject-sections", async (req, res) => {
         if (!subjects.length || !classes.length) {
           await connection.rollback()
 
-          return res
-            .status(400)
-            .json({
-              ok: false,
-              message: "Select an existing subject and class section.",
-            })
+          return res.status(400).json({
+            ok: false,
+            message: "Select an existing subject and class section.",
+          })
         }
 
         const [duplicates] = await connection.query(
@@ -5701,13 +5730,11 @@ app.post("/api/subject-sections", async (req, res) => {
         if (duplicates[0]?.status === "active") {
           await connection.rollback()
 
-          return res
-            .status(409)
-            .json({
-              ok: false,
-              message:
-                "This subject is already offered to the selected class section for this term.",
-            })
+          return res.status(409).json({
+            ok: false,
+            message:
+              "This subject is already offered to the selected class section for this term.",
+          })
         }
 
         record.subjectName = subjects[0].name
@@ -5723,18 +5750,20 @@ app.post("/api/subject-sections", async (req, res) => {
 
           await connection.query(
             `UPDATE subject_sections SET subjectName = ?, classSectionName = ?,
-             teacher = ?, status = 'active' WHERE id = ?`,
+             teacher = ?, room = ?, schedule = ?, status = 'active' WHERE id = ?`,
 
             [
               record.subjectName,
               record.classSectionName,
               record.teacher,
+              record.room,
+              record.schedule,
               record.id,
             ],
           )
         } else {
           await connection.query(
-            "INSERT INTO subject_sections (id, subjectCode, subjectName, classSectionCode, classSectionName, teacher, schoolYear, semester, enrolledStudents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+            "INSERT INTO subject_sections (id, subjectCode, subjectName, classSectionCode, classSectionName, teacher, room, schedule, schoolYear, semester, enrolledStudents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
 
             [
               record.id,
@@ -5743,6 +5772,8 @@ app.post("/api/subject-sections", async (req, res) => {
               record.classSectionCode,
               record.classSectionName,
               record.teacher,
+              record.room,
+              record.schedule,
               record.schoolYear,
               record.semester,
               JSON.stringify([]),
@@ -5795,14 +5826,11 @@ app.post("/api/subject-sections", async (req, res) => {
           (section.status || "active") === "active",
       )
 
-      if (duplicate)
-        return res
-          .status(409)
-          .json({
-            ok: false,
-            message:
-              "This subject section already exists for the selected class section and term.",
-          })
+      if (duplicate) return res.status(409).json({
+          ok: false,
+          message:
+            "This subject section already exists for the selected class section and term.",
+        })
 
       if (
         !state.subjects.some(
@@ -5812,12 +5840,10 @@ app.post("/api/subject-sections", async (req, res) => {
           (section) => section.code === record.classSectionCode,
         )
       ) {
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            message: "Select an existing subject and class section.",
-          })
+        return res.status(400).json({
+          ok: false,
+          message: "Select an existing subject and class section.",
+        })
       }
 
       const archived = state.subjectSections.find(
@@ -5960,12 +5986,10 @@ app.post("/api/class-sections", async (req, res) => {
       const state = await loadState()
 
       if (state.classSections.some((item) => item.code === section.code)) {
-        return res
-          .status(409)
-          .json({
-            ok: false,
-            message: "A class section with this code already exists.",
-          })
+        return res.status(409).json({
+          ok: false,
+          message: "A class section with this code already exists.",
+        })
       }
 
       state.classSections.push(section)
@@ -5975,13 +5999,10 @@ app.post("/api/class-sections", async (req, res) => {
 
     return res.status(201).json({ ok: true, classSection: section })
   } catch (error) {
-    if (error.code === "ER_DUP_ENTRY")
-      return res
-        .status(409)
-        .json({
-          ok: false,
-          message: "A class section with this code already exists.",
-        })
+    if (error.code === "ER_DUP_ENTRY") return res.status(409).json({
+        ok: false,
+        message: "A class section with this code already exists.",
+      })
 
     console.error("Unable to create class section:", error)
 
@@ -6094,17 +6115,18 @@ app.patch("/api/class-sections/:code", async (req, res) => {
       if (
         state.users.some(
           (student) =>
-          student.role === "student" &&
-          String(student.classSectionCode || "").trim().toUpperCase() ===
-            code &&
-          !studentMatchesSectionAttributes(student, section),
+            student.role === "student" &&
+            String(student.classSectionCode || "")
+              .trim()
+              .toUpperCase() === code &&
+            !studentMatchesSectionAttributes(student, section),
         )
       ) {
         return res.status(409).json({
           ok: false,
 
           message:
-          "Update the assigned students' grade and strand before changing this section's grade or strand.",
+            "Update the assigned students' grade and strand before changing this section's grade or strand.",
         })
       }
 
@@ -6158,13 +6180,11 @@ app.delete("/api/class-sections/:code", async (req, res) => {
         if (Number(offerings[0].count)) {
           await connection.rollback()
 
-          return res
-            .status(409)
-            .json({
-              ok: false,
-              message:
-                "Remove or reassign this class section's subject offerings before deleting it.",
-            })
+          return res.status(409).json({
+            ok: false,
+            message:
+              "Remove or reassign this class section's subject offerings before deleting it.",
+          })
         }
 
         await connection.query("DELETE FROM class_sections WHERE code = ?", [
@@ -6190,13 +6210,11 @@ app.delete("/api/class-sections/:code", async (req, res) => {
           .json({ ok: false, message: "Class section not found." })
 
       if (state.subjectSections.some((item) => item.classSectionCode === code))
-        return res
-          .status(409)
-          .json({
-            ok: false,
-            message:
-              "Remove or reassign this class section's subject offerings before deleting it.",
-          })
+        return res.status(409).json({
+          ok: false,
+          message:
+            "Remove or reassign this class section's subject offerings before deleting it.",
+        })
 
       state.classSections = state.classSections.filter(
         (item) => item.code !== code,
@@ -6220,8 +6238,15 @@ app.delete("/api/class-sections/:code", async (req, res) => {
 app.patch("/api/subject-sections/:id", async (req, res) => {
   const id = String(req.params.id)
 
-  const { subjectCode, classSectionCode, teacher, schoolYear, semester } =
-    req.body || {}
+  const {
+    subjectCode,
+    classSectionCode,
+    teacher,
+    room,
+    schedule,
+    schoolYear,
+    semester,
+  } = req.body || {}
 
   if (
     !subjectCode ||
@@ -6230,13 +6255,11 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
     !schoolYear ||
     !semester
   ) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message:
-          "Subject, class section, teacher, school year, and semester are required.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message:
+        "Subject, class section, teacher, school year, and semester are required.",
+    })
   }
 
   const record = {
@@ -6247,6 +6270,10 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
     classSectionCode: String(classSectionCode).trim(),
 
     teacher: String(teacher).trim(),
+
+    room: String(room || "").trim(),
+
+    schedule: String(schedule || "").trim(),
 
     schoolYear: normalizeSchoolYear(schoolYear),
 
@@ -6275,12 +6302,10 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
         if (!subjects.length || !classes.length) {
           await connection.rollback()
 
-          return res
-            .status(400)
-            .json({
-              ok: false,
-              message: "Select an existing subject and class section.",
-            })
+          return res.status(400).json({
+            ok: false,
+            message: "Select an existing subject and class section.",
+          })
         }
 
         const [duplicates] = await connection.query(
@@ -6300,13 +6325,11 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
         if (duplicates.length) {
           await connection.rollback()
 
-          return res
-            .status(409)
-            .json({
-              ok: false,
-              message:
-                "This subject is already offered to the selected class section for this term.",
-            })
+          return res.status(409).json({
+            ok: false,
+            message:
+              "This subject is already offered to the selected class section for this term.",
+          })
         }
 
         record.subjectName = subjects[0].name
@@ -6314,7 +6337,7 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
         record.classSectionName = classes[0].name
 
         const [result] = await connection.query(
-          "UPDATE subject_sections SET subjectCode = ?, subjectName = ?, classSectionCode = ?, classSectionName = ?, teacher = ?, schoolYear = ?, semester = ? WHERE id = ?",
+          "UPDATE subject_sections SET subjectCode = ?, subjectName = ?, classSectionCode = ?, classSectionName = ?, teacher = ?, room = ?, schedule = ?, schoolYear = ?, semester = ? WHERE id = ?",
 
           [
             record.subjectCode,
@@ -6322,6 +6345,8 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
             record.classSectionCode,
             record.classSectionName,
             record.teacher,
+            record.room,
+            record.schedule,
             record.schoolYear,
             record.semester,
             id,
@@ -6371,13 +6396,11 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
             item.semester === record.semester,
         )
       ) {
-        return res
-          .status(409)
-          .json({
-            ok: false,
-            message:
-              "This subject is already offered to the selected class section for this term.",
-          })
+        return res.status(409).json({
+          ok: false,
+          message:
+            "This subject is already offered to the selected class section for this term.",
+        })
       }
 
       const subject = state.subjects.find(
@@ -6388,13 +6411,10 @@ app.patch("/api/subject-sections/:id", async (req, res) => {
         (item) => item.code === record.classSectionCode,
       )
 
-      if (!subject || !classSection)
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            message: "Select an existing subject and class section.",
-          })
+      if (!subject || !classSection) return res.status(400).json({
+          ok: false,
+          message: "Select an existing subject and class section.",
+        })
 
       state.subjectSections[index] = {
         ...state.subjectSections[index],
@@ -6919,23 +6939,19 @@ app.get("/api/assessments/:id/attempts", async (req, res) => {
       const scopes = await getRecordScopes(req.user)
 
       if (!scopes.has(String(assessment.scopeId))) {
-        return res
-          .status(403)
-          .json({
-            ok: false,
-            message: "You are not allowed to view these attempts.",
-          })
+        return res.status(403).json({
+          ok: false,
+          message: "You are not allowed to view these attempts.",
+        })
       }
     } else if (req.user.role === "student") {
       const scopes = await getRecordScopes(req.user)
 
       if (!scopes.has(String(assessment.scopeId))) {
-        return res
-          .status(403)
-          .json({
-            ok: false,
-            message: "You are not enrolled in this assessment's class.",
-          })
+        return res.status(403).json({
+          ok: false,
+          message: "You are not enrolled in this assessment's class.",
+        })
       }
     }
 
@@ -6997,23 +7013,19 @@ app.get("/api/assessments/:id/attempts", async (req, res) => {
 
 app.post("/api/assessments/:id/attempts", async (req, res) => {
   if (req.user.role !== "student") {
-    return res
-      .status(403)
-      .json({
-        ok: false,
-        message: "Only students can submit an assessment attempt.",
-      })
+    return res.status(403).json({
+      ok: false,
+      message: "Only students can submit an assessment attempt.",
+    })
   }
 
   const answers = req.body?.answers
 
   if (!Array.isArray(answers) || !answers.every(Number.isInteger)) {
-    return res
-      .status(400)
-      .json({
-        ok: false,
-        message: "A valid answer is required for every question.",
-      })
+    return res.status(400).json({
+      ok: false,
+      message: "A valid answer is required for every question.",
+    })
   }
 
   try {
@@ -7040,12 +7052,10 @@ app.post("/api/assessments/:id/attempts", async (req, res) => {
     const questions = await loadAssessmentQuestions(assessment)
 
     if (!questions.length || answers.length !== questions.length) {
-      return res
-        .status(400)
-        .json({
-          ok: false,
-          message: "Answer every configured question before submitting.",
-        })
+      return res.status(400).json({
+        ok: false,
+        message: "Answer every configured question before submitting.",
+      })
     }
 
     if (
@@ -7137,12 +7147,10 @@ app.post("/api/assessments/:id/attempts", async (req, res) => {
         await connection.rollback()
 
         if (error.code === "ER_DUP_ENTRY") {
-          return res
-            .status(409)
-            .json({
-              ok: false,
-              message: "This assessment attempt was already submitted.",
-            })
+          return res.status(409).json({
+            ok: false,
+            message: "This assessment attempt was already submitted.",
+          })
         }
 
         throw error
@@ -7433,12 +7441,10 @@ app.post("/api/records/:resource", async (req, res) => {
     )
 
     if (!access.allowed) {
-      return res
-        .status(403)
-        .json({
-          ok: false,
-          message: "You are not allowed to modify this record.",
-        })
+      return res.status(403).json({
+        ok: false,
+        message: "You are not allowed to modify this record.",
+      })
     }
 
     const existing = await findStoredRecord(resource, recordId)
@@ -7454,12 +7460,10 @@ app.post("/api/records/:resource", async (req, res) => {
         ) &&
           existing.ownerId !== access.ownerId))
     ) {
-      return res
-        .status(403)
-        .json({
-          ok: false,
-          message: "You are not allowed to modify this record.",
-        })
+      return res.status(403).json({
+        ok: false,
+        message: "You are not allowed to modify this record.",
+      })
     }
 
     if (resource === "scores") {
@@ -7689,22 +7693,18 @@ app.patch("/api/records/:resource/:id", async (req, res) => {
     )
 
     if (!access.allowed) {
-      return res
-        .status(403)
-        .json({
-          ok: false,
-          message: "You are not allowed to modify this record.",
-        })
+      return res.status(403).json({
+        ok: false,
+        message: "You are not allowed to modify this record.",
+      })
     }
 
     if (resource === "scores") {
       if (existing.studentId !== recordPayload.studentId) {
-        return res
-          .status(403)
-          .json({
-            ok: false,
-            message: "A score cannot be reassigned to another student.",
-          })
+        return res.status(403).json({
+          ok: false,
+          message: "A score cannot be reassigned to another student.",
+        })
       }
 
       const state = await loadState()
@@ -7845,12 +7845,10 @@ app.delete("/api/records/:resource/:id", async (req, res) => {
       !access.allowed ||
       (req.user.role !== "admin" && !canDeleteOwnNotification)
     ) {
-      return res
-        .status(403)
-        .json({
-          ok: false,
-          message: "Administrator access is required to delete records.",
-        })
+      return res.status(403).json({
+        ok: false,
+        message: "Administrator access is required to delete records.",
+      })
     }
 
     const pool = await ensureMysqlConnection()

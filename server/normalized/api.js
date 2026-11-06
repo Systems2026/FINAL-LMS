@@ -1374,7 +1374,7 @@ export function createNormalizedApi({
                 cs.section_name AS classSectionName, cs.section_code AS classSectionCode,
                 gl.grade_name AS gradeLevel, strand.strand_code AS strand,
                 ay.year_code AS schoolYear, s.subject_code AS subjectCode,
-                cs.section_name AS room, '' AS schedule, '#1F6FEB' AS color
+                sa.room, sa.schedule, '#1F6FEB' AS color
          FROM subject_assignments sa
          JOIN subjects s ON s.subject_id = sa.subject_id
          JOIN class_sections cs ON cs.class_section_id = sa.class_section_id
@@ -1645,7 +1645,7 @@ export function createNormalizedApi({
                 cs.class_section_id AS classSectionId, cs.section_code AS classSectionCode,
                 cs.section_name AS classSectionName, sa.teacher_id AS teacherId,
                 teacher.full_name AS teacher, ay.year_code AS schoolYear,
-                sa.semester, sa.status,
+                sa.semester, sa.room, sa.schedule, sa.status,
                 (SELECT JSON_ARRAYAGG(se.student_id)
                  FROM subject_enrollments se
                  WHERE se.subject_assignment_id = sa.subject_assignment_id
@@ -1842,8 +1842,15 @@ export function createNormalizedApi({
   router.post("/subject-sections", async (req, res) => {
     if (!requireAdmin(req, res)) return
 
-    const { subjectCode, classSectionCode, schoolYear, semester, teacher } =
-      req.body || {}
+    const {
+      subjectCode,
+      classSectionCode,
+      schoolYear,
+      semester,
+      teacher,
+      room,
+      schedule,
+    } = req.body || {}
 
     if (
       !subjectCode ||
@@ -1868,13 +1875,19 @@ export function createNormalizedApi({
 
         semester,
 
+        room,
+
+        schedule,
+
         selectedAssignments: [{ subjectCode, teacher }],
+
+        replaceLocationDetails: true,
       })
 
       const [rows] = await pool.query(
         `SELECT subject_assignment_id AS id, subject_id AS subjectId,
                 teacher_id AS teacherId, class_section_id AS classSectionId,
-                academic_year_id AS academicYearId, semester, status
+                academic_year_id AS academicYearId, semester, room, schedule, status
          FROM subject_assignments
          WHERE subject_id = (SELECT subject_id FROM subjects WHERE subject_code = ?)
            AND class_section_id = (SELECT class_section_id FROM class_sections WHERE section_code = ?)
@@ -1893,12 +1906,12 @@ export function createNormalizedApi({
   router.patch("/subject-sections/:id", async (req, res) => {
     if (!requireAdmin(req, res)) return
 
-    const { teacher, semester, status } = req.body || {}
+    const { teacher, semester, status, room, schedule } = req.body || {}
 
     try {
       const [currentRows] = await pool.query(
         `SELECT subject_assignment_id AS id, teacher_id AS teacherId,
-                semester, status FROM subject_assignments
+                semester, room, schedule, status FROM subject_assignments
          WHERE subject_assignment_id = ? LIMIT 1`,
 
         [req.params.id],
@@ -1938,12 +1951,15 @@ export function createNormalizedApi({
       }
 
       await pool.query(
-        `UPDATE subject_assignments SET teacher_id = ?, semester = ?, status = ?
+        `UPDATE subject_assignments SET teacher_id = ?, semester = ?,
+           room = ?, schedule = ?, status = ?
          WHERE subject_assignment_id = ?`,
 
         [
           teacherId,
           semester || current.semester,
+          room === undefined ? current.room : String(room).trim(),
+          schedule === undefined ? current.schedule : String(schedule).trim(),
           status || current.status,
           req.params.id,
         ],

@@ -1043,6 +1043,12 @@ export function createNormalizedRepositories(pool) {
 
       semester,
 
+      room = "",
+
+      schedule = "",
+
+      replaceLocationDetails = false,
+
       selectedAssignments,
 
       removeSubjectCodes = [],
@@ -1152,9 +1158,11 @@ export function createNormalizedRepositories(pool) {
           await connection.query(
             `INSERT INTO subject_assignments
               (subject_id, teacher_id, class_section_id, academic_year_id,
-               semester, status)
-             VALUES (?, ?, ?, ?, ?, 'active')
-             ON DUPLICATE KEY UPDATE teacher_id = VALUES(teacher_id), status = 'active'`,
+               semester, room, schedule, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+             ON DUPLICATE KEY UPDATE teacher_id = VALUES(teacher_id),
+               room = IF(?, VALUES(room), room),
+               schedule = IF(?, VALUES(schedule), schedule), status = 'active'`,
 
             [
               subject.id,
@@ -1162,6 +1170,10 @@ export function createNormalizedRepositories(pool) {
               section.id,
               yearId,
               normalizeText(semester),
+              normalizeText(input.room ?? room),
+              normalizeText(input.schedule ?? schedule),
+              replaceLocationDetails,
+              replaceLocationDetails,
             ],
           )
 
