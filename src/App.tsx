@@ -7439,6 +7439,58 @@ function ManagementPage({
       apiFetch("/api/strands"),
     ])
       .then(async (responses) => {
+        if (responses.some((response) => response.status === 404)) {
+          const response = await apiFetch("/api/class-sections/available")
+          const payload: unknown = await response.json().catch(() => null)
+          const sectionRows =
+            isRecord(payload) && Array.isArray(payload.sections)
+              ? payload.sections.filter(isRecord)
+              : null
+          const yearCode =
+            isRecord(payload) &&
+            isRecord(payload.period) &&
+            typeof payload.period.schoolYear === "string"
+              ? payload.period.schoolYear
+              : ""
+          if (!response.ok || !sectionRows) {
+            throw new Error(
+              (isRecord(payload) && typeof payload.message === "string"
+                ? payload.message
+                : "") || "Unable to load academic placement options.",
+            )
+          }
+          if (!active) return
+          const years = yearCode
+            ? [{ id: yearCode, code: yearCode, isCurrent: true }]
+            : []
+          const grades = Array.from(
+            new Set(
+              sectionRows
+                .map((section) => String(section.gradeLevel || "").trim())
+                .filter(Boolean),
+            ),
+          ).map((name) => ({
+            id: name,
+            name,
+            number: Number(name.match(/\d+/)?.[0] || 0),
+          }))
+          const availableStrands = Array.from(
+            new Set(
+              sectionRows
+                .map((section) => String(section.strand || "").trim())
+                .filter(Boolean),
+            ),
+          ).map((name) => ({ id: name, code: name, name }))
+          setAcademicYears(years)
+          setGradeLevels(grades)
+          setStrands(availableStrands)
+          setSelectedAcademicYearId((current) =>
+            years.some((year) => year.id === current)
+              ? current
+              : years.find((year) => year.isCurrent)?.id || years[0]?.id || "",
+          )
+          return
+        }
         const payloads = await Promise.all(
           responses.map(async (response) => {
             const payload = await response.json().catch(() => null)
@@ -7474,7 +7526,9 @@ function ManagementPage({
         )
         setSelectedAcademicYearId(
           (current) =>
-            current || years.find((year) => year.isCurrent)?.id || years[0]?.id || "",
+            years.some((year) => year.id === current)
+              ? current
+              : years.find((year) => year.isCurrent)?.id || years[0]?.id || "",
         )
       })
       .catch((error: unknown) => {
@@ -7518,6 +7572,12 @@ function ManagementPage({
             : "") || "Unable to load available class sections.",
         )
       }
+      const legacyYearId =
+        isRecord(payload) &&
+        isRecord(payload.period) &&
+        typeof payload.period.schoolYear === "string"
+          ? payload.period.schoolYear
+          : ""
       if (requestId !== classSectionRequestId.current) return
       setClassSectionOptions(
         sections.map((value) => {
@@ -7531,9 +7591,11 @@ function ManagementPage({
             gradeLevel: String(value.gradeLevel || ""),
             strand: String(value.strand || ""),
             schoolYear: String(value.schoolYear || ""),
-            academicYearId: String(value.academicYearId || ""),
-            gradeLevelId: String(value.gradeLevelId || ""),
-            strandId: String(value.strandId || ""),
+            academicYearId: String(
+              value.academicYearId || legacyYearId || value.schoolYear || "",
+            ),
+            gradeLevelId: String(value.gradeLevelId || value.gradeLevel || ""),
+            strandId: String(value.strandId || value.strand || ""),
           }
         }),
       )
