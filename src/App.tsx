@@ -6,11 +6,10 @@ type Role = "student" | "teacher" | "admin"
 type IconName = "grid" | "book" | "layers" | "file" | "check" | "quiz" | "chart" | "bell" | "user" | "logout" | "users" | "briefcase" | "report" | "settings" | "search" | "menu" | "close" | "plus" | "arrow" | "clock" | "calendar" | "room" | "download" | "edit" | "trash" | "eye" | "filter" | "chevron" | "award" | "activity"
 
 const schoolTimeZone = "Asia/Manila"
-const studentStrandOptions = ["Stem", "Gas", "TVL-ICT", "ABM", "HUMSS"]
+const studentStrandOptions = ["Stem", "Gas", "TVL-ICT", "ICT", "ABM", "HUMSS"]
 
 function normalizeStrand(value: string) {
-  const strand = value.trim().toLowerCase()
-  return strand === "ict" ? "tvl-ict" : strand
+  return value.trim().toLowerCase()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -7283,7 +7282,25 @@ function ManagementPage({
     gradeLevel: string
     strand: string
     schoolYear: string
+    academicYearId: string
+    gradeLevelId: string
+    strandId: string
   }[]>([])
+  const [academicYears, setAcademicYears] = useState<
+    { id: string; code: string; isCurrent: boolean }[]
+  >([])
+  const [gradeLevels, setGradeLevels] = useState<
+    { id: string; name: string; number: number }[]
+  >([])
+  const [strands, setStrands] = useState<
+    { id: string; code: string; name: string }[]
+  >([])
+  const [academicYearIdByStudent, setAcademicYearIdByStudent] = useState<
+    Record<string, string>
+  >({})
+  const [selectedAcademicYearId, setSelectedAcademicYearId] = useState("")
+  const [selectedGradeLevelId, setSelectedGradeLevelId] = useState("")
+  const [selectedStrandId, setSelectedStrandId] = useState("")
   const [classSectionLoadError, setClassSectionLoadError] = useState("")
   const [classSectionLoading, setClassSectionLoading] = useState(false)
   const [classSectionCodeByStudentId, setClassSectionCodeByStudentId] =
@@ -7332,7 +7349,11 @@ function ManagementPage({
               String(student.name),
               String(student.gradeLevel || ""),
               String(student.strand || ""),
-              String(student.section || ""),
+              String(
+                student.classSectionName ||
+                  (student.classSectionCode ? student.section : "Unassigned") ||
+                  "",
+              ),
             ]),
           )
           setEmailByStudentId(
@@ -7348,6 +7369,14 @@ function ManagementPage({
               payload.map((student) => [
                 String(student.id),
                 String(student.classSectionCode || ""),
+              ]),
+            ),
+          )
+          setAcademicYearIdByStudent(
+            Object.fromEntries(
+              payload.map((student) => [
+                String(student.id),
+                String(student.academicYearId || ""),
               ]),
             ),
           )
@@ -7386,11 +7415,81 @@ function ManagementPage({
     }
   }, [isStudents, isTeachers, kind])
 
+  useEffect(() => {
+    if (!isStudents) return
+    let active = true
+    void Promise.all([
+      apiFetch("/api/academic-years"),
+      apiFetch("/api/grade-levels"),
+      apiFetch("/api/strands"),
+    ])
+      .then(async (responses) => {
+        const payloads = await Promise.all(
+          responses.map(async (response) => {
+            const payload = await response.json().catch(() => null)
+            if (!response.ok || !Array.isArray(payload)) {
+              throw new Error(payload?.message || "Unable to load academic placement options.")
+            }
+            return payload
+          }),
+        )
+        if (!active) return
+        const [yearRows, gradeRows, strandRows] = payloads
+        const years = yearRows
+          .filter((year) => String(year.status).toLowerCase() === "active")
+          .map((year) => ({
+          id: String(year.id),
+          code: String(year.code),
+          isCurrent: Boolean(year.isCurrent),
+          }))
+        setAcademicYears(years)
+        setGradeLevels(
+          gradeRows.map((grade) => ({
+            id: String(grade.id),
+            name: String(grade.name),
+            number: Number(grade.number),
+          })),
+        )
+        setStrands(
+          strandRows.map((strand) => ({
+            id: String(strand.id),
+            code: String(strand.code),
+            name: String(strand.name),
+          })),
+        )
+        setSelectedAcademicYearId(
+          (current) =>
+            current || years.find((year) => year.isCurrent)?.id || years[0]?.id || "",
+        )
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setClassSectionLoadError(
+            error instanceof Error
+              ? error.message
+              : "Unable to load academic placement options.",
+          )
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [isStudents])
+
   const loadAvailableClassSections = async () => {
     setClassSectionLoading(true)
     setClassSectionLoadError("")
     try {
-      const response = await apiFetch("/api/class-sections/available")
+      const query = new URLSearchParams()
+      if (selectedAcademicYearId) query.set("academicYearId", selectedAcademicYearId)
+      if (selectedGradeLevelId) query.set("gradeLevelId", selectedGradeLevelId)
+      if (selectedStrandId) query.set("strandId", selectedStrandId)
+      if (selectedClassSectionCode) {
+        query.set("currentSectionCode", selectedClassSectionCode)
+      }
+      const response = await apiFetch(
+        `/api/class-sections/available?${query.toString()}`,
+      )
       const payload: unknown = await response.json().catch(() => null)
       const sections =
         isRecord(payload) && Array.isArray(payload.sections)
@@ -7415,6 +7514,9 @@ function ManagementPage({
             gradeLevel: String(value.gradeLevel || ""),
             strand: String(value.strand || ""),
             schoolYear: String(value.schoolYear || ""),
+            academicYearId: String(value.academicYearId || ""),
+            gradeLevelId: String(value.gradeLevelId || ""),
+            strandId: String(value.strandId || ""),
           }
         }),
       )
@@ -7430,17 +7532,20 @@ function ManagementPage({
   }
 
   useEffect(() => {
-    if (isStudents) void loadAvailableClassSections()
-  }, [isStudents])
+    if (isStudents && selectedAcademicYearId) void loadAvailableClassSections()
+  }, [
+    isStudents,
+    selectedAcademicYearId,
+    selectedGradeLevelId,
+    selectedStrandId,
+    selectedClassSectionCode,
+  ])
 
-  const gradeOptions = ["Grade 11", "Grade 12"]
   const matchingClassSections = classSectionOptions.filter(
     (section) =>
-      section.gradeLevel.trim().toLowerCase() ===
-        String(draft[2] || "")
-          .trim()
-          .toLowerCase() &&
-      normalizeStrand(section.strand) === normalizeStrand(draft[3] || ""),
+      String(section.academicYearId) === String(selectedAcademicYearId) &&
+      String(section.gradeLevelId) === String(selectedGradeLevelId) &&
+      String(section.strandId) === String(selectedStrandId),
   )
   const openRecord = (mode: "view" | "edit" | "add", index?: number) => {
     setRecordError("")
@@ -7459,19 +7564,22 @@ function ManagementPage({
     const recordId = selectedStudentRecord?.[0] || ""
     const existingCode = recordId
       ? classSectionCodeByStudentId[recordId] ||
-        classSectionOptions.find(
-          (section) =>
-            section.gradeLevel.trim().toLowerCase() ===
-              String(selectedStudentRecord?.[2] || "")
-                .trim()
-                .toLowerCase() &&
-            normalizeStrand(section.strand) ===
-              normalizeStrand(selectedStudentRecord?.[3] || "") &&
-            section.section.toUpperCase() ===
-              String(selectedStudentRecord?.[4] || "").toUpperCase(),
-        )?.code ||
         ""
       : ""
+    const existingYearId = recordId ? academicYearIdByStudent[recordId] || "" : ""
+    const currentYearId =
+      academicYears.find((year) => year.isCurrent)?.id || academicYears[0]?.id || ""
+    setSelectedAcademicYearId(existingYearId || currentYearId)
+    setSelectedGradeLevelId(
+      gradeLevels.find((grade) => grade.name === selectedStudentRecord?.[2])?.id || "",
+    )
+    setSelectedStrandId(
+      strands.find(
+        (strand) =>
+          strand.code.toLowerCase() ===
+          String(selectedStudentRecord?.[3] || "").toLowerCase(),
+      )?.id || "",
+    )
     setSelectedClassSectionCode(existingCode)
   }
   const closeRecord = () => {
@@ -7480,6 +7588,8 @@ function ManagementPage({
     setDraft([])
     setDraftPassword("")
     setSelectedClassSectionCode("")
+    setSelectedGradeLevelId("")
+    setSelectedStrandId("")
   }
   const saveRecord = async () => {
     if (isStudents) {
@@ -7502,6 +7612,9 @@ function ManagementPage({
               strand: draft[3],
               section: draft[4],
               classSectionCode: selectedClassSectionCode,
+              academicYearId: selectedAcademicYearId,
+              gradeLevelId: selectedGradeLevelId,
+              strandId: selectedStrandId,
             }),
           },
         )
@@ -7515,7 +7628,11 @@ function ManagementPage({
           String(student.name),
           String(student.gradeLevel || ""),
           String(student.strand || ""),
-          String(student.section || ""),
+          String(
+            student.classSectionName ||
+              (student.classSectionCode ? student.section : "Unassigned") ||
+              "",
+          ),
         ]
         setRecords((current) =>
           isAdding
@@ -7797,12 +7914,40 @@ function ManagementPage({
                 {isStudents && (
                   <>
                     <label className="field">
+                      <span>Academic Year</span>
+                      <select
+                        required
+                        value={selectedAcademicYearId}
+                        onChange={(event) => {
+                          setSelectedAcademicYearId(event.target.value)
+                          setSelectedClassSectionCode("")
+                          setDraft((current) => {
+                            const next = [...current]
+                            next[4] = ""
+                            return next
+                          })
+                        }}
+                      >
+                        <option value="">Select academic year</option>
+                        {academicYears.map((year) => (
+                          <option key={year.id} value={year.id}>
+                            {year.code}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
                       <span>Grade</span>
                       <select
                         required
                         value={draft[2] || ""}
                         onChange={(event) => {
                           setSelectedClassSectionCode("")
+                          setSelectedGradeLevelId(
+                            gradeLevels.find(
+                              (grade) => grade.name === event.target.value,
+                            )?.id || "",
+                          )
                           setDraft((current) => {
                             const next = [...current]
                             next[2] = event.target.value
@@ -7813,9 +7958,9 @@ function ManagementPage({
                         }}
                       >
                         <option value="">Select grade</option>
-                        {gradeOptions.map((grade) => (
-                          <option key={grade} value={grade}>
-                            {grade}
+                        {gradeLevels.map((grade) => (
+                          <option key={grade.id} value={grade.name}>
+                            {grade.name}
                           </option>
                         ))}
                       </select>
@@ -7827,6 +7972,11 @@ function ManagementPage({
                         value={draft[3] || ""}
                         onChange={(event) => {
                           setSelectedClassSectionCode("")
+                          setSelectedStrandId(
+                            strands.find(
+                              (strand) => strand.code === event.target.value,
+                            )?.id || "",
+                          )
                           setDraft((current) => {
                             const next = [...current]
                             next[3] = event.target.value
@@ -7836,9 +7986,9 @@ function ManagementPage({
                         }}
                       >
                         <option value="">Select strand</option>
-                        {studentStrandOptions.map((strand) => (
-                          <option key={strand} value={strand}>
-                            {strand}
+                        {strands.map((strand) => (
+                          <option key={strand.id} value={strand.code}>
+                            {strand.name}
                           </option>
                         ))}
                       </select>
@@ -7849,7 +7999,10 @@ function ManagementPage({
                         required
                         value={selectedClassSectionCode}
                         disabled={
-                          !draft[2] || !draft[3] || !!classSectionLoadError
+                          !selectedAcademicYearId ||
+                          !selectedGradeLevelId ||
+                          !selectedStrandId ||
+                          !!classSectionLoadError
                         }
                         onChange={(event) => {
                           const selectedSection = matchingClassSections.find(
@@ -7858,7 +8011,7 @@ function ManagementPage({
                           setSelectedClassSectionCode(event.target.value)
                           setDraft((current) => {
                             const next = [...current]
-                            next[4] = selectedSection?.section || ""
+                            next[4] = selectedSection?.name || ""
                             return next
                           })
                         }}
@@ -7866,8 +8019,7 @@ function ManagementPage({
                         <option value="">Select section</option>
                         {matchingClassSections.map((section) => (
                           <option key={section.code} value={section.code}>
-                            {section.section || section.name} — {section.name} (
-                            {section.code})
+                            {section.name}
                           </option>
                         ))}
                       </select>

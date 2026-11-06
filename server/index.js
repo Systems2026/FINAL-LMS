@@ -15,6 +15,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 
 import { fileURLToPath } from "node:url"
+import { createNormalizedApi } from "./normalized/api.js"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -77,10 +78,23 @@ app.use(express.json({ limit: "8mb" }))
 
 const activeSessions = new Map()
 
+const configuredSchemaProfile = process.env.DB_SCHEMA_PROFILE || "legacy"
+
+if (!["legacy", "normalized_v1"].includes(configuredSchemaProfile)) {
+  throw new Error("DB_SCHEMA_PROFILE must be legacy or normalized_v1.")
+}
+
+let normalizedApiRouter = null
+
 const sessionLifetimeMs = 8 * 60 * 60 * 1000
 
 app.use("/api", (req, res, next) => {
-  if (req.path === "/login" || req.path === "/health") return next()
+  if (req.path === "/login" || req.path === "/health") {
+    if (configuredSchemaProfile === "normalized_v1" && normalizedApiRouter) {
+      return normalizedApiRouter(req, res, next)
+    }
+    return next()
+  }
 
   const authorization = req.get("authorization") || ""
 
@@ -117,23 +131,26 @@ app.use("/api", (req, res, next) => {
 
           const status = res.statusCode >= 400 ? "Blocked" : "Success"
 
-          await pool.query(
-            "INSERT INTO activity_logs (id, message, userId, action, module, status, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())",
-
-            [
-              crypto.randomUUID(),
-
-              action,
-
-              req.user.id,
-
-              action,
-
-              moduleName,
-
-              status,
-            ],
-          )
+          if (configuredSchemaProfile === "normalized_v1") {
+            await pool.query(
+              `INSERT INTO activity_logs
+                (user_id, action, module, status, message)
+               VALUES (?, ?, ?, ?, ?)`,
+              [req.user.id, action, moduleName, status.toLowerCase(), action],
+            )
+          } else {
+            await pool.query(
+              "INSERT INTO activity_logs (id, message, userId, action, module, status, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())",
+              [
+                crypto.randomUUID(),
+                action,
+                req.user.id,
+                action,
+                moduleName,
+                status,
+              ],
+            )
+          }
         } catch (error) {
           console.error("Unable to record API activity:", error)
         }
@@ -191,6 +208,7 @@ app.use("/api", (req, res, next) => {
       /^\/(students|teachers|subjects|classes|class-sections|subject-sections|enrollments)(\/|$)/.test(
         path,
       ) ||
+      path.startsWith("/records/classes") ||
       path.startsWith("/admin/records/") ||
       /^\/records\/(settings|class-statuses)(\/|$)/.test(path)
 
@@ -210,6 +228,8 @@ app.use("/api", (req, res, next) => {
         "assessment-questions",
         "class-content",
         "lessons",
+        "grades",
+        "attendance",
       ].includes(resource) &&
       !["admin", "teacher"].includes(role)
     ) {
@@ -230,11 +250,28 @@ app.use("/api", (req, res, next) => {
         .json({ ok: false, message: "Student access is required." })
     }
 
-    if (resource === "scores" && !["admin", "teacher"].includes(role)) {
+    if (
+      ["scores", "grades", "attendance"].includes(resource) &&
+      !["admin", "teacher"].includes(role)
+    ) {
       return res
         .status(403)
         .json({ ok: false, message: "Staff access is required." })
     }
+
+    if (
+      resource === "assessment-attempts" &&
+      ["POST", "PATCH", "DELETE"].includes(req.method)
+    ) {
+      return res.status(403).json({
+        ok: false,
+        message: "Submit attempts through the assessment endpoint.",
+      })
+    }
+  }
+
+  if (configuredSchemaProfile === "normalized_v1" && normalizedApiRouter) {
+    return normalizedApiRouter(req, res, next)
   }
 
   next()
@@ -261,6 +298,8 @@ const defaultState = {
 let mysqlPool = null
 
 let mysqlReady = false
+
+let mysqlSchemaProfile = null
 
 let studentCreationQueue = Promise.resolve()
 
@@ -341,30 +380,111 @@ async function ensureMysqlConnection() {
   if (mysqlReady && mysqlPool) return mysqlPool
 
   try {
-    const bootstrapPool = mysql.createPool({
-      host: dbConfig.host,
+    if (configuredSchemaProfile === "legacy") {
+      const bootstrapPool = mysql.createPool({
+        host: dbConfig.host,
+        port: dbConfig.port,
+        user: dbConfig.user,
+        password: dbConfig.password,
+        connectionLimit: dbConfig.connectionLimit,
+        queueLimit: dbConfig.queueLimit,
+      })
 
-      port: dbConfig.port,
+      await bootstrapPool.query(
+        `CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\``,
+      )
 
-      user: dbConfig.user,
-
-      password: dbConfig.password,
-
-      connectionLimit: dbConfig.connectionLimit,
-
-      queueLimit: dbConfig.queueLimit,
-    })
-
-    await bootstrapPool.query(
-      `CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\``,
-    )
-
-    await bootstrapPool.end()
+      await bootstrapPool.end()
+    }
 
     mysqlPool = mysql.createPool(dbConfig)
 
     await mysqlPool.query("SELECT 1")
 
+    const [schemaMetadataTables] = await mysqlPool.query(
+      `SELECT COUNT(*) AS tableCount
+       FROM information_schema.tables
+       WHERE table_schema = ? AND table_name = 'schema_metadata'`,
+      [dbConfig.database],
+    )
+
+    let detectedProfile = null
+    if (Number(schemaMetadataTables[0].tableCount) > 0) {
+      const [schemaProfiles] = await mysqlPool.query(
+        "SELECT metadata_value FROM schema_metadata WHERE metadata_key = 'schema_profile' LIMIT 1",
+      )
+
+      detectedProfile = schemaProfiles[0]?.metadata_value || null
+    }
+
+    if (configuredSchemaProfile === "normalized_v1") {
+      if (detectedProfile !== "normalized_v1") {
+        throw new Error(
+          "DB_SCHEMA_PROFILE=normalized_v1 requires a database marked as normalized_v1.",
+        )
+      }
+
+      const requiredTables = [
+        "roles",
+        "users",
+        "academic_years",
+        "grade_levels",
+        "strands",
+        "class_sections",
+        "student_enrollments",
+        "student_enrollment_history",
+        "teacher_assignments",
+        "subjects",
+        "subject_assignments",
+        "activities",
+        "submissions",
+        "assessment_questions",
+        "assessment_attempts",
+        "grades",
+        "announcements",
+        "attendance",
+        "lms_records",
+        "activity_logs",
+        "student_id_sequence",
+      ]
+      const [tableRows] = await mysqlPool.query(
+        `SELECT table_name FROM information_schema.tables
+         WHERE table_schema = ? AND table_name IN (${requiredTables.map(() => "?").join(",")})`,
+        [dbConfig.database, ...requiredTables],
+      )
+      const foundTables = new Set(
+        tableRows.map((row) => row.TABLE_NAME || row.table_name),
+      )
+      const missingTables = requiredTables.filter((table) => !foundTables.has(table))
+      if (missingTables.length) {
+        throw new Error(
+          `The normalized database is incomplete; missing tables: ${missingTables.join(", ")}.`,
+        )
+      }
+
+      mysqlSchemaProfile = "normalized_v1"
+      const { router } = createNormalizedApi({
+        pool: mysqlPool,
+        sessions: activeSessions,
+        hashPassword,
+        verifyPassword,
+      })
+      normalizedApiRouter = router
+      mysqlReady = true
+      console.log("Connected to MySQL using the normalized_v1 schema.")
+      return mysqlPool
+    }
+
+    if (detectedProfile === "normalized_v1") {
+      throw new Error(
+        "The selected database uses normalized_v1. Set DB_SCHEMA_PROFILE=normalized_v1 to explicitly enable its API; the legacy mode will not initialize against it.",
+      )
+    }
+    if (detectedProfile && detectedProfile !== "legacy") {
+      throw new Error(`Unsupported database schema profile: ${detectedProfile}.`)
+    }
+
+    mysqlSchemaProfile = "legacy"
     mysqlReady = true
 
     console.log("Connected to MySQL/WAMP database.")
@@ -773,9 +893,27 @@ async function ensureMysqlConnection() {
       [initialTeacherSequenceValue],
     )
   } catch (error) {
+    const failedPool = mysqlPool
     mysqlPool = null
 
     mysqlReady = false
+
+    mysqlSchemaProfile = null
+    normalizedApiRouter = null
+    if (failedPool) {
+      await failedPool.end().catch((closeError) => {
+        console.error("Unable to close the failed MySQL pool:", closeError)
+      })
+    }
+
+    if (
+      configuredSchemaProfile === "normalized_v1" ||
+      error.code === "ERR_NORMALIZED_SCHEMA_UNSUPPORTED"
+    ) {
+      console.error("The configured database schema is not supported.", error)
+
+      throw error
+    }
 
     if (!allowJsonFallback) {
       console.error(
@@ -1276,44 +1414,31 @@ function studentMatchesClassSection(student, classSection) {
     return false
   }
 
-  const sectionLetter = getClassSectionLetter(classSection)
-
-  const normalize = (value) =>
-    String(value || "")
+  return (
+    String(student.classSectionCode || "")
+      .trim()
+      .toLowerCase() ===
+    String(classSection.code || "")
       .trim()
       .toLowerCase()
+  )
+}
 
-  const normalizeStrand = (value) => {
-    const strand = normalize(value)
-
-    return strand === "ict" ? "tvl-ict" : strand
-  }
-
-  const studentSection = normalize(student.section)
-
-  const sectionName = normalize(classSection.name)
-
-  const sectionCode = normalize(classSection.code)
-
-  const gradeMatches =
-    normalize(student.gradeLevel) === normalize(classSection.gradeLevel)
-
-  const strandMatches =
-    !student.strand ||
-    normalizeStrand(student.strand) === normalizeStrand(classSection.strand)
-
-  const sectionCodeMatches =
-    !student.classSectionCode ||
-    String(student.classSectionCode).trim().toLowerCase() ===
-      String(classSection.code).trim().toLowerCase()
-
+function sectionAttributeMatches(value, sectionValue) {
   return (
-    gradeMatches &&
-    strandMatches &&
-    sectionCodeMatches &&
-    [sectionName, sectionCode, sectionLetter.toLowerCase()].includes(
-      studentSection,
-    )
+    String(value || "")
+      .trim()
+      .toLowerCase() ===
+    String(sectionValue || "")
+      .trim()
+      .toLowerCase()
+  )
+}
+
+function studentMatchesSectionAttributes(student, classSection) {
+  return (
+    sectionAttributeMatches(student.gradeLevel, classSection.gradeLevel) &&
+    sectionAttributeMatches(student.strand, classSection.strand)
   )
 }
 
@@ -1340,10 +1465,7 @@ function getStudentSectionLetter(student, classSections) {
     studentMatchesClassSection(student, section),
   )
 
-  return (
-    getClassSectionLetter(classSection) ||
-    getClassSectionLetter({ name: student.section, code: student.section })
-  )
+  return getClassSectionLetter(classSection)
 }
 
 function normalizeSchoolYear(value) {
@@ -2652,23 +2774,35 @@ app.get("/api/students", async (_, res) => {
 
       .filter((user) => user.role === "student")
 
-      .map((user) => ({
-        id: user.id,
+      .map((user) => {
+        const assignedClassSection = state.classSections.find(
+          (section) =>
+            String(section.code || "").trim().toLowerCase() ===
+            String(user.classSectionCode || "")
+              .trim()
+              .toLowerCase(),
+        )
 
-        name: user.name,
+        return {
+          id: user.id,
 
-        email: user.email,
+          name: user.name,
 
-        gradeLevel: user.gradeLevel || "",
+          email: user.email,
 
-        strand: user.strand || "",
+          gradeLevel: user.gradeLevel || "",
 
-        classSectionCode: user.classSectionCode || "",
+          strand: user.strand || "",
 
-        section: getStudentSectionLetter(user, state.classSections),
+          classSectionCode: user.classSectionCode || "",
 
-        status: user.status || "Active",
-      })),
+          classSectionName: assignedClassSection?.name || "",
+
+          section: getClassSectionLetter(assignedClassSection),
+
+          status: user.status || "Active",
+        }
+      }),
   )
 })
 
@@ -3123,7 +3257,15 @@ app.patch("/api/teachers/:id", async (req, res) => {
 })
 
 app.post("/api/students", async (req, res) => {
-  const { name, email, password, classSectionCode, status } = req.body || {}
+  const {
+    name,
+    email,
+    password,
+    gradeLevel,
+    strand,
+    classSectionCode,
+    status,
+  } = req.body || {}
 
   const normalizedName = String(name || "").trim()
 
@@ -3132,6 +3274,10 @@ app.post("/api/students", async (req, res) => {
     .toLowerCase()
 
   const normalizedPassword = String(password || "")
+
+  const normalizedGradeLevel = String(gradeLevel || "").trim()
+
+  const normalizedStrand = String(strand || "").trim()
 
   const normalizedClassSectionCode = String(classSectionCode || "")
 
@@ -3144,12 +3290,15 @@ app.post("/api/students", async (req, res) => {
     !normalizedEmail ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) ||
     normalizedPassword.length < 8 ||
+    !normalizedGradeLevel ||
+    !normalizedStrand ||
     !normalizedClassSectionCode
   ) {
     return res.status(400).json({
       ok: false,
 
-      message: "Name, email, password, and a valid class section are required.",
+      message:
+        "Name, email, password, grade, strand, and a valid class section are required.",
     })
   }
 
@@ -3211,6 +3360,18 @@ app.post("/api/students", async (req, res) => {
 
           classSection = lockedClassSections[0]
 
+          if (!studentMatchesSectionAttributes(
+            { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+            classSection,
+          )) {
+            await connection.rollback()
+
+            return {
+              error:
+                "The selected section must match the student's grade and strand.",
+            }
+          }
+
           if (
             normalizeSchoolYear(classSection.schoolYear) !==
             normalizeSchoolYear(period.schoolYear)
@@ -3265,9 +3426,9 @@ app.post("/api/students", async (req, res) => {
 
             password: passwordHash,
 
-            gradeLevel: classSection.gradeLevel,
+            gradeLevel: normalizedGradeLevel,
 
-            strand: classSection.strand,
+            strand: normalizedStrand,
 
             section: getClassSectionLetter(classSection),
 
@@ -3353,6 +3514,16 @@ app.post("/api/students", async (req, res) => {
         return { error: "The selected class section is no longer active." }
       }
 
+      if (!studentMatchesSectionAttributes(
+        { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+        classSection,
+      )) {
+        return {
+          error:
+            "The selected section must match the student's grade and strand.",
+        }
+      }
+
       if (
         normalizeSchoolYear(classSection.schoolYear) !==
         normalizeSchoolYear(period.schoolYear)
@@ -3388,9 +3559,9 @@ app.post("/api/students", async (req, res) => {
 
         password: passwordHash,
 
-        gradeLevel: classSection.gradeLevel,
+        gradeLevel: normalizedGradeLevel,
 
-        strand: classSection.strand,
+        strand: normalizedStrand,
 
         section: getClassSectionLetter(classSection),
 
@@ -3442,6 +3613,8 @@ app.post("/api/students", async (req, res) => {
 
         classSectionCode: student.classSectionCode,
 
+        classSectionName: classSection.name,
+
         status: student.status,
 
         enrolledSubjects,
@@ -3469,13 +3642,18 @@ app.post("/api/students", async (req, res) => {
 app.patch("/api/students/:id", async (req, res) => {
   const id = String(req.params.id)
 
-  const { name, email, classSectionCode, status } = req.body || {}
+  const { name, email, gradeLevel, strand, classSectionCode, status } =
+    req.body || {}
 
   const normalizedName = String(name || "").trim()
 
   const normalizedEmail = String(email || "")
     .trim()
     .toLowerCase()
+
+  const normalizedGradeLevel = String(gradeLevel || "").trim()
+
+  const normalizedStrand = String(strand || "").trim()
 
   const normalizedClassSectionCode = String(classSectionCode || "")
 
@@ -3487,12 +3665,14 @@ app.patch("/api/students/:id", async (req, res) => {
     !normalizedName ||
     !normalizedEmail ||
     !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) ||
+    !normalizedGradeLevel ||
+    !normalizedStrand ||
     !normalizedClassSectionCode
   ) {
     return res.status(400).json({
       ok: false,
 
-      message: "Name, email, and a valid class section are required.",
+      message: "Name, email, grade, strand, and a valid class section are required.",
     })
   }
 
@@ -3560,6 +3740,20 @@ app.patch("/api/students/:id", async (req, res) => {
         }
 
         classSection = lockedClassSections[0]
+
+        if (!studentMatchesSectionAttributes(
+          { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+          classSection,
+        )) {
+          await connection.rollback()
+
+          return res.status(400).json({
+            ok: false,
+
+            message:
+              "The selected section must match the student's grade and strand.",
+          })
+        }
 
         const period = await getActiveAcademicPeriod(connection)
 
@@ -3646,9 +3840,9 @@ app.patch("/api/students/:id", async (req, res) => {
 
             normalizedEmail,
 
-            classSection.gradeLevel,
+            normalizedGradeLevel,
 
-            classSection.strand,
+            normalizedStrand,
 
             getClassSectionLetter(classSection),
 
@@ -3675,6 +3869,8 @@ app.patch("/api/students/:id", async (req, res) => {
             ...rows[0],
 
             classSectionCode: classSection.code,
+
+            classSectionName: classSection.name,
 
             enrolledSubjects,
 
@@ -3711,6 +3907,18 @@ app.patch("/api/students/:id", async (req, res) => {
         ok: false,
 
         message: "The selected class section is no longer active.",
+      })
+    }
+
+    if (!studentMatchesSectionAttributes(
+      { gradeLevel: normalizedGradeLevel, strand: normalizedStrand },
+      classSection,
+    )) {
+      return res.status(400).json({
+        ok: false,
+
+        message:
+          "The selected section must match the student's grade and strand.",
       })
     }
 
@@ -3792,9 +4000,9 @@ app.patch("/api/students/:id", async (req, res) => {
 
       email: normalizedEmail,
 
-      gradeLevel: classSection.gradeLevel,
+      gradeLevel: normalizedGradeLevel,
 
-      strand: classSection.strand,
+      strand: normalizedStrand,
 
       section: getClassSectionLetter(classSection),
 
@@ -3812,6 +4020,7 @@ app.patch("/api/students/:id", async (req, res) => {
 
       student: {
         ...publicStudent,
+        classSectionName: classSection.name,
         enrolledSubjects,
         enrollmentChanged: sectionChanged,
       },
@@ -5810,6 +6019,25 @@ app.patch("/api/class-sections/:code", async (req, res) => {
     const pool = await ensureMysqlConnection()
 
     if (pool) {
+      const [assignedStudents] = await pool.query(
+        "SELECT gradeLevel, strand FROM users WHERE role = 'student' AND classSectionCode = ?",
+
+        [code],
+      )
+
+      if (
+        assignedStudents.some(
+          (student) => !studentMatchesSectionAttributes(student, section),
+        )
+      ) {
+        return res.status(409).json({
+          ok: false,
+
+          message:
+            "Update the assigned students' grade and strand before changing this section's grade or strand.",
+        })
+      }
+
       const [result] = await pool.query(
         "UPDATE class_sections SET name = ?, gradeLevel = ?, strand = ?, schoolYear = ?, adviser = ? WHERE code = ?",
 
@@ -5862,6 +6090,23 @@ app.patch("/api/class-sections/:code", async (req, res) => {
         return res
           .status(404)
           .json({ ok: false, message: "Class section not found." })
+
+      if (
+        state.users.some(
+          (student) =>
+          student.role === "student" &&
+          String(student.classSectionCode || "").trim().toUpperCase() ===
+            code &&
+          !studentMatchesSectionAttributes(student, section),
+        )
+      ) {
+        return res.status(409).json({
+          ok: false,
+
+          message:
+          "Update the assigned students' grade and strand before changing this section's grade or strand.",
+        })
+      }
 
       state.classSections[index] = section
 
@@ -8118,6 +8363,17 @@ app.use(express.static(distPath))
 
 app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(distPath, "index.html"))
+})
+
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error)
+  if (error?.type === "entity.parse.failed") {
+    return res.status(400).json({
+      ok: false,
+      message: "Request body must contain valid JSON.",
+    })
+  }
+  return next(error)
 })
 
 async function startServer() {

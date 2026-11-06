@@ -141,6 +141,15 @@ existing table engines, columns, and indexes. Back up existing data before
 deploying an updated backend. Do not run these migrations against production
 without a reviewed backup and maintenance plan.
 
+In the legacy application schema, a student assignment is stored as
+`users.classSectionCode` referencing `class_sections.code`; grade and strand
+are text fields and strand labels compare literally (`ICT` is not
+`TVL-ICT`). The separate `lms_clean` schema normalizes these into
+`student_enrollments`, `class_sections`, `grade_levels`, `strands`, and
+`academic_years`. The application still uses the legacy schema; see the
+[database migration plan](./database/MIGRATION_PLAN.md) before considering a
+switch.
+
 `server/data.json` is an optional local fallback store, not a MySQL backup.
 The fallback is disabled by default and should not be enabled for production.
 
