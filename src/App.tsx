@@ -347,6 +347,7 @@ const nav: Record<Role, {
 type ClassRecord = {
   subject: string
   code: string
+  displayCode?: string
   teacher: string
   room: string
   schedule: string
@@ -1553,6 +1554,7 @@ function ClassesPage({
             : classPayload.map((item) => ({
                 subject: String(item.subjectName || ""),
                 code: String(item.id),
+                displayCode: String(item.subjectCode || ""),
                 teacher: String(item.teacher || ""),
                 room: String(item.room || ""),
                 schedule: String(item.schedule || ""),
@@ -1731,7 +1733,7 @@ function ClassesPage({
         {visibleClasses.map((c, i) => (
           <Card className="class-card" key={c.code}>
             <div className={`class-cover cover-${c.color}`}>
-              <span>{c.code}</span>
+              <span>{c.displayCode || c.code}</span>
               <Icon
                 name={i === 3 ? "activity" : i === 2 ? "layers" : "book"}
                 size={36}
@@ -1740,7 +1742,7 @@ function ClassesPage({
             <div className="class-body">
               <div className="class-title">
                 <div>
-                  <p>{c.code}</p>
+                  <p>{c.displayCode || c.code}</p>
                   <h2>{c.subject}</h2>
                 </div>
               </div>
@@ -3288,6 +3290,7 @@ function ClassDetails({
             : {
                 subject: String(record.subjectName || ""),
                 code: String(record.id),
+                displayCode: String(record.subjectCode || ""),
                 teacher: String(record.teacher || ""),
                 room: "",
                 schedule: "",
@@ -3515,7 +3518,9 @@ function ClassDetails({
           <Icon name="book" size={32} />
         </div>
         <div>
-          <span className="eyebrow">{selectedClass.code}</span>
+          <span className="eyebrow">
+            {selectedClass.displayCode || selectedClass.code}
+          </span>
           <h1>{selectedClass.subject}</h1>
           <p>
             {[
